@@ -1,0 +1,182 @@
+---
+title: "Krig interpolation1"
+author: "Hejaz Navaser"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r cars}
+library(sp)
+library(raster)
+library(gstat)
+library(fields)
+library(ggplot2)
+library(geoR)
+require(MBA)
+
+```
+
+
+## loading the data
+
+```{r}
+load("C:/Users/Yasaman/Desktop/Spatial/datiAll.RData")
+head(wolf)
+summary(wolf)
+
+```
+
+```{r}
+# Q1.Choose the variogram model (justify your choice)
+
+# First of all, the data must be changed into spatial form. 
+spwolf = SpatialPointsDataFrame(coords =cbind(wolf$x,wolf$y), data=wolf)
+
+extent.wolf <- extent(spwolf)
+gwolf <- expand.grid(x = seq(from = round(extent.wolf@xmin),
+                     to = round(extent.wolf@xmax), length.out = 20),
+                     y = seq(from = round(extent.wolf@ymin),
+                     to = round(extent.wolf@ymax),length.out = 20))
+
+coordinates(gwolf) <- ~x + y
+
+grid <- gwolf
+# storing spatial data in the grid
+gridded(grid) <- TRUE 
+
+plot(grid, main = paste("20x20 Interpolation Grid of Wolfcamp data"),col = "grey")
+
+plot(spwolf, add = TRUE, pch = 15, cex = 0.5, col = "green") 
+
+
+head(wolf)
+summary(wolf)
+```
+
+
+```{r}
+regpiezo<-lm(piezo~x+y, data= spwolf)
+summary(regpiezo)
+
+#at first we get our emperical variogram 
+
+vv<-variogram(piezo~x+y,data = spwolf)
+plot(vv,type="b")
+
+```
+
+As we can see in the plot, It is almost a little similar to our ideal mode in which the sill be visible and we observe a trend of covariance that depend only on distance.
+
+```{r}
+# Now, we want to try differnet fitting on our variogram.
+# first we use OLS Regression to fit our variogram with different models
+
+vv1<-gstat::fit.variogram(variogram(piezo~x+y,data = spwolf),vgm("Exp"), fit.method = 6)
+plot(vv,vv1)
+
+
+vv2<-gstat::fit.variogram(variogram(piezo~x+y,data = spwolf),vgm("Sph"), fit.method = 6)
+plot(vv,vv2)
+
+
+vv3 <- gstat::fit.variogram.reml(piezo~x+y,data = spwolf, model = vgm(psil= 400, "Sph",range = 30,nugget=500))
+plot(vv,vv3)
+
+vv4 <- fit.variogram(vv, vgm(c("Exp", "Mat", "Sph")))
+plot(vv,vv4)
+
+```
+
+
+```{r}
+
+# we Compare variogram models through kriging and cross validation
+# kriging minimizes MSE, so the smaller MSE, the better the model is
+
+
+krige1<-krige.cv(formula=piezo~x+y,spwolf,model = vv1, nmax=40, nfold=10)
+krige2<-krige.cv(formula=piezo~x+y,spwolf,model = vv2, nmax=40, nfold=10)
+krige3<-krige.cv(formula=piezo~x+y,spwolf,model = vv3, nmax=40, nfold=10)
+krige4<-krige.cv(formula=piezo~x+y,spwolf,model = vv4, nmax=40, nfold=10)
+
+bubble(krige1,"residual")
+bubble(krige2,"residual")
+bubble(krige3,"residual")
+bubble(krige4,"residual")
+
+
+```
+
+RMSE (should be smaller)
+
+
+```{r}
+
+mean(krige1$residual^2) 
+mean(krige2$residual^2)
+mean(krige3$residual^2)
+mean(krige4$residual^2)
+
+```
+
+As we can see, the Exponential is slightly better for Kriging interpolation
+
+
+```{r}
+# Q2. Run a spatial interpolation using kriging in the likelihood framework.
+# here, we can use our best variogram model (Exponential) in likelihood framework
+
+newkrige<-krige(formula=piezo~x+y, spwolf,model = vv1, newdata = grid)
+
+summary(newkrige)
+head(newkrige)
+
+plot(newkrige, trend = '1st')
+
+```
+
+plotting of our kriging interpolation
+
+```{r}
+
+loc=coordinates(grid)
+xyz=mba.surf(cbind(loc,newkrige$var1.pred),100,100,sp=T)$xyz.est
+spplot(xyz)
+
+
+
+spplot(newkrige["var1.pred"], main = "kriging Interpolation")
+
+spplot(newkrige["var1.var"], main = "kriging standard deviation")
+
+```
+
+now, we want to assess our prediction with confidence intervals first of we should show the point view of this interpolation
+
+
+```{r}
+
+pointkrige<-data.frame(x=gwolf$x,y=gwolf$y,pred=newkrige@data$var1.pred,var=newkrige@data$var1.var, std=sqrt(newkrige@data$var1.var))
+
+ggplot(pointkrige)+geom_point(aes(x=x,y=y, fill = pred,col=pred), size=1)+
+  scale_fill_gradient("estimated value",low = "blue", high = "pink")+
+  scale_color_gradient("estimated value",low = "blue", high = "pink")
+
+
+pointkrige$low<- pointkrige$pred-1.95*pointkrige$std
+pointkrige$up<- pointkrige$pred+1.95*pointkrige$std
+
+pointkrige$low
+pointkrige$up
+
+#showing the number of bad prediction(as we can see, there is not any bad predicted point)
+
+sum(pointkrige$low<0)
+
+```
+
+
