@@ -1,0 +1,213 @@
+---
+title: "Data Interpolation"
+author: "Hejaz Navaser"
+date: 
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r echo=FALSE}
+require(gstat)
+require(sp)
+require(raster)
+require(ggplot2)
+require(MBA)
+```
+
+
+##Build an R function to choose the parameter p in the inverse distance weighting estimator
+
+
+```{r}
+
+best_p <- function(dataset, p){
+  # The goal : find the best power value p for IDW estimation LOOCV
+  
+  # Preparing the Dataset to fit IDW function
+  if (typeof(dataset) == "list"){
+  
+    # converting the dataframe to SpatialPointsDataFrame
+    
+    dataset <- SpatialPointsDataFrame(data=dataset, coords=cbind(dataset$x, dataset$y)) 
+    
+  }
+  
+  #samp <- spsample(x = dataset, n=1000, type = "regular")
+  
+  
+  # Applying LOOCV
+  m <- 100000
+  dd <- matrix(data = NA, nrow = length(p), ncol = 2)
+  dd[,1] <- p
+  
+  
+  # looping over the different powers (p values)
+  for (j in p){ 
+    
+    
+   RMSE <- c()
+    
+    # testing all the observations  of the train-set
+    for (i in 1:length(dataset)){ 
+      
+      # We estimate the missing parameter
+      IDW <- gstat::idw(piezo~1, dataset[-i,], dataset, idp=j) 
+      
+      # Save the RMSE (to keep the same dimension of the data)
+      RMSE[j] <- sqrt(mean((dataset$piezo[j] - IDW$var1.pred)^2)) 
+
+    }
+    
+    # Getting the mean of the results
+    dd[j,2] <- RMSE[j]
+  }
+  bp <- dd[which.min(dd[,2]),1]
+  return(list (dd, bp))
+}
+```
+
+# loading the data
+
+```{r Question 1}
+data <- load("C:/Users/39351/documents/spatial homeworks/datiAll.RData")
+```
+
+
+```{r Testing the function, results='hide'}
+dd <- best_p(wolf, p = seq(1,4,0.4))
+#nrow(wolf)
+```
+
+```{r best p-values}
+p <- dd[[2]]
+p
+list(dd)
+
+```
+
+
+Load the **datiAll.RData** object to work on the **Wolfcamp dataset**. Interpolate **Wolfcamp data** on a 20x20 grid (built from the coordinates) using **IDW** and multilevel **bi-splines** (function mba.surf from MBA) and compare the results using a proper score
+
+```{r}
+
+# to create the 20x20 grid, firstly we set the existing coordinates.
+# Secondly, we use the expand.grid()to construct grid from known points.
+coordinates(wolf) <- ~x+y
+plot(wolf)
+
+```
+
+```{r plotting}
+
+# Range of the coordinates 
+x.range <- range(wolf@coords[,1])
+y.range <- range(wolf@coords[,2])
+
+#creating the grid
+gridd <- expand.grid(x=seq(from=x.range[1], to=x.range[2], length.out = 20), y=seq(from=y.range[1], to=y.range[2], length.out = 20)) 
+
+coordinates(gridd) <- ~ x+y
+gridded(gridd) <- TRUE
+
+# display the grid with the known points
+{plot(gridd, cex=2)
+points(wolf, pch=2, col='blue', cex=1.2)
+title("Interpolation Grid with and Points")}
+
+```
+
+```{r applying cross validation and RMSE of IDW()}
+
+set.seed(555)
+
+# to divide the data set into 70% train and 30% test sets for interpolation
+#we use set.seed() to guarantee the same random values production each time we run the code
+
+# set the indices
+i <- sample(c(0,1), size = length(wolf), replace = TRUE, p = c(0.7,0.3))
+
+train_set <- wolf[i==0,]
+test_set <- wolf[i==1,]
+
+# searching for the best power (p_value)
+dd <- best_p(train_set, p = seq(1,3,0.6))
+
+# finding the ange of the coordinates 
+x.range <- range(train_set@coords[,1])
+y.range <- range(train_set@coords[,2])
+
+# Creating the grid using the expand.grid() function as above
+
+gridd <- expand.grid(x=seq(from=x.range[1], to=x.range[2], length.out = 20), y=seq(from=y.range[1], to=y.range[2], length.out = 20)) 
+
+coordinates(gridd) <- ~ x+y
+gridded(gridd) <- TRUE
+
+
+## Applying IDW on the grid
+idw_grid <- idw(formula=piezo ~ 1, locations=train_set, newdata=gridd, idp = p)
+
+ ## Applying IDW on test-set 
+idw_test <- idw(formula=piezo ~ 1, locations=train_set, newdata=test_set, idp = p)
+
+```
+
+
+```{r}
+# calculating the root mean square error of IDW 
+RMSE_idw <- sqrt(mean(test_set$piezo - idw_test@data$var1.pred)^2)
+
+#print(idw_test@data$var1.pred)
+#print(test_set$piezo)
+
+print(RMSE_idw)
+```
+
+```{r}
+## Showing the estimates on the grid
+idw_grid.output <- as.data.frame(idw_grid)
+names(idw_grid.output)[1:3] <- c("x","y","var1.pred")
+
+plot <- ggplot(data=as.data.frame(gridd),aes(x=x,y=y))
+layer1 <- c(geom_tile(data=idw_grid.output[,-4],aes(fill=var1.pred)))
+
+plot+layer1+coord_equal()
+
+```
+
+```{r}
+## Applying the Multilevel Bi-Splines to estimate the 20x20 grid
+train_tr <- as.data.frame(train_set)
+mba.int <- mba.surf(train_tr, 20, 20, extend=TRUE, sp=TRUE)$xyz.est
+
+# we can output the estimated grid 
+image(mba.int, xaxs="r", yaxs="r")
+```
+
+```{r}
+# using mba.points() function to estimate the piezo values in the test set
+#(mba.points returns points on a surface approximated from a bivariate scatter of points using multilevel B-splines)
+test_tr <- as.data.frame(test_set)
+test_tr <- test_tr[,-3]
+mba.est <- mba.points(train_tr, test_tr)
+
+## calculating the RMSE
+RMSE_mba <- sqrt(mean((as.data.frame(test_set)[,3]-mba.est$xyz.est[,3])^2))
+RMSE_mba
+
+```
+
+```{r conclusion}
+
+# As it can be seen the both methods have different performance and the IDW method  performed more efficiently than the Multi-level Bi-Splines method. IDW has very low RMSE compared to the Multi-level Bi-Splines method.
+
+ifelse(which.min(c(RMSE_idw,RMSE_mba))==1, print("idw"), print("multi-level bi splines"))
+
+
+
+print(c(RMSE_idw, RMSE_mba))
+
+```
